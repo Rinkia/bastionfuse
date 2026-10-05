@@ -41,7 +41,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if args.cmd == "hook":
-        return main_hook(args.event, args.policy, home_pinned=args.home is not None)
+        try:
+            rc = main_hook(args.event, args.policy, home_pinned=args.home is not None)
+        except Exception:  # noqa: BLE001 - e.g. writing the deny reason to a closed stderr
+            rc = 2 if args.event == "pre" else 0
+        try:
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+        # os._exit: a failing flush at interpreter shutdown (closed stderr pipe) would turn
+        # exit 2 into 120, which Claude Code treats as "allow"
+        os._exit(rc)
     if args.cmd == "decoy-mcp":
         from .decoy_mcp import main as decoy_main
         return decoy_main()

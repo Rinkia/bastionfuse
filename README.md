@@ -161,12 +161,8 @@ that fit your work, and only then enforce the repeat detector.
 
 ## Limits (read these)
 
-**Known open issues in 0.1 (HIGH, fixes planned):**
+**Known open issue in 0.1 (HIGH, fix planned):**
 
-- **A crafted call can make the hook outlive Claude Code's hook timeout.** Expanding some path
-  arguments (remote or very broad paths) can take longer than the hook timeout. Claude Code then
-  treats the hook as failed and runs the tool, so that one call skips the fuse. A hook-wide
-  watchdog that denies before the timeout is the planned fix.
 - **Decoy-path taint can miss some ways of naming a decoy file in a command's arguments.**
   Honeytokens in tool *results* and the other tripwires still apply, but a command that sends a
   decoy file without the agent ever reading it may go unseen.
@@ -178,6 +174,10 @@ that fit your work, and only then enforce the repeat detector.
   it misses. **For a real guarantee**, put the hook in managed settings and deny the agent
   filesystem access to `~/.bastionfuse` and your settings files (Claude Code `permissions.deny`
   or sandbox rules), or run the agent as a different OS user.
+- **Slow checks deny, they don't time out.** A watchdog blocks the call if a check runs past
+  10 s, below the 15 s hook timeout the installer registers (Claude Code runs the tool when a
+  hook times out). Remote paths are never resolved or globbed, and globbing is bounded. Keep the
+  registered `timeout` above 10 s.
 - **A hook that can't start fails open.** If the `bastionfuse` command is missing (uninstalled,
   broken venv), Claude Code treats the error as non-blocking and runs the tool. Self-protect blocks
   package-manager commands that name bastionfuse, but the guarantee again needs filesystem deny

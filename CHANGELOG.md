@@ -22,4 +22,9 @@ agent does, not by what its text says.
   `bastionfuse reset`.
 - **Trip snapshots** as bastiontrace v1 traces (honeytokens redacted), plus a JSONL log with a
   `bastionfuse log --summary` tally.
+- **Hook watchdog:** a check that runs past 10 s denies (exit 2) before Claude Code's hook
+  timeout, which would otherwise let the tool run. Remote paths are never resolved or globbed;
+  globbing is lazy and bounded by hits and time.
+  Self-protect regexes are bounded (they hold the GIL, so a quadratic match would also stall
+  the watchdog), and the hook keeps exit code 2 even when stderr is closed.
 - **Assume-breach demo** (`bastionfuse demo`): a scripted attacker vs the fuse, no API key.

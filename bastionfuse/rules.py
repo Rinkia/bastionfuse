@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import string
+import time
 import unicodedata
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
@@ -31,6 +32,7 @@ MAX_SHELL_COMMAND = 32_768  # longer shell commands are refused: classification 
 MAX_PATH_TOKENS = 2000
 MAX_GLOBS = 8
 MAX_GLOB_HITS = 32
+PATH_BUDGET_S = 2.0  # wall-clock budget for filesystem work (realpath, glob) per call
 MAX_DEPTH = 3  # nested `bash -c` / `powershell -enc` levels to unwrap
 
 
@@ -61,8 +63,16 @@ def fold(text: str) -> str:
 
 
 def _strip_cf(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text)
-    return "".join(c for c in text if unicodedata.category(c) != "Cf")
+    if text.isascii():  # NFKC is the identity on ASCII, and ASCII has no format characters
+        return text
+    return unicodedata.normalize("NFKC", text).translate(_cf_table())
+
+
+@lru_cache(maxsize=1)
+def _cf_table() -> dict[int, None]:
+    """Every format (Cf) code point -> deleted. str.translate runs in C (a per-char loop was
+    the slowest part of a 1 MB scan). Built lazily: it costs ~0.2 s, and ASCII never needs it."""
+    return {cp: None for cp in range(0x110000) if unicodedata.category(chr(cp)) == "Cf"}
 
 
 # separators an attacker sprinkles inside a token: whitespace, quotes, shell
@@ -200,6 +210,7 @@ def path_candidates(tool_input: Any, cwd: str | None) -> set[str]:
     Windows short names (8.3) expanded and globs expanded (bounded)."""
     out: set[str] = set()
     words, globs = 0, 0
+    deadline = time.monotonic() + PATH_BUDGET_S
     if isinstance(tool_input, dict):  # path-bearing fields only: file content isn't a path
         tool_input = [v for k, v in tool_input.items() if str(k).casefold() in _PATH_KEYS]
     for s in _strings(tool_input if not isinstance(tool_input, str) else [tool_input], [64]):
@@ -215,6 +226,10 @@ def path_candidates(tool_input: Any, cwd: str | None) -> set[str]:
                     continue
                 p = os.path.join(cwd, p)
             out.add(_norm(p))
+            # filesystem work only on local paths, and only within the time budget:
+            # a remote path can block for tens of seconds (and contacts that host)
+            if _is_remote(p) or time.monotonic() > deadline:
+                continue
             if os.name == "nt" and "~" in p:
                 try:
                     out.add(_norm(os.path.realpath(p)))
@@ -222,16 +237,32 @@ def path_candidates(tool_input: Any, cwd: str | None) -> set[str]:
                     pass
             if any(c in p for c in "*?[") and globs < MAX_GLOBS:
                 globs += 1
-                try:
-                    hits = glob.glob(p, include_hidden=True) if _GLOB_HIDDEN else glob.glob(p)
-                except (OSError, ValueError, re.error):
-                    hits = []
-                for h in hits[:MAX_GLOB_HITS]:
-                    out.add(_norm(os.path.realpath(h)))
+                out |= _bounded_glob(p, deadline)
     return out
 
 
-_GLOB_HIDDEN = "include_hidden" in glob.glob.__code__.co_varnames
+def _is_remote(p: str) -> bool:
+    return bool(_REMOTE.match(p.replace("\\", "/")))
+
+
+def _bounded_glob(pattern: str, deadline: float) -> set[str]:
+    """Lazy glob: stop at MAX_GLOB_HITS or the deadline instead of listing everything."""
+    out: set[str] = set()
+    try:
+        it = glob.iglob(pattern, include_hidden=True) if _GLOB_HIDDEN else glob.iglob(pattern)
+        for h in it:
+            if _is_remote(h):
+                continue
+            out.add(_norm(os.path.realpath(h)))
+            if len(out) >= MAX_GLOB_HITS or time.monotonic() > deadline:
+                break
+    except (OSError, ValueError, re.error):
+        pass
+    return out
+
+
+_GLOB_HIDDEN = "include_hidden" in glob.iglob.__code__.co_varnames
+_REMOTE = re.compile(r"^(?://|[a-z][a-z0-9+.-]*://)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -497,11 +528,14 @@ def hosts_of(text: str) -> set[str]:
 
 # --- self-protection ---------------------------------------------------------
 
-_FUSE_VERBS = re.compile(r"(?:^|[\s;&|(])bastionfuse(?:\.exe)?(?=\s)[^\n;&|]*?\b(?:reset|plant|untrip)\b"
+# Every repetition is bounded: `re` holds the GIL, so an unbounded quadratic match on a
+# large input would also stall the hook watchdog (round-3 review).
+_FUSE_VERBS = re.compile(r"(?:^|[\s;&|(])bastionfuse(?:\.exe)?(?=\s)[^\n;&|]{0,128}?\b(?:reset|plant|untrip)\b"
                          r"|bastionfuse\.cli", re.IGNORECASE)
-_PKG_TOOLS = re.compile(r"\b(?:pip3?|pipx|uv|conda|mamba|poetry|pdm|rye|hatch)\b[^\n;&|]*\bbastionfuse\b",
+_PKG_TOOLS = re.compile(r"\b(?:pip3?|pipx|uv|conda|mamba|poetry|pdm|rye|hatch)\b[^\n;&|]{0,128}?\bbastionfuse\b",
                         re.IGNORECASE)
-_SETTINGS = re.compile(r"\.claude[\\/]+(?:[^\s\\/\"']*[\\/]+)*settings(?:\.local)?\.json", re.IGNORECASE)
+_SETTINGS = re.compile(r"\.claude[\\/]{1,4}(?:[^\s\\/\"']{1,64}[\\/]{1,4}){0,8}settings(?:\.local)?\.json",
+                       re.IGNORECASE)
 _SETTINGS_TAIL = re.compile(r"/\.claude/settings(?:\.local)?\.json$")
 
 

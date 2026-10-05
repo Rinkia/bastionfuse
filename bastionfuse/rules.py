@@ -429,7 +429,10 @@ def _simple(words: list[str], entries, commands, depth: int) -> set[str]:
         labels |= _nested(name, args, commands, depth)
     for j, a in enumerate(args):  # find -exec CMD ... ;
         if a in ("-exec", "-execdir", "-ok", "-okdir") and j + 1 < len(args):
-            labels |= _simple(args[j + 1:], entries, commands, depth + 1)
+            if depth < MAX_DEPTH:
+                labels |= _simple(args[j + 1:], entries, commands, depth + 1)
+            else:
+                labels.add(OPAQUE)  # nested deeper than we unwrap: treat as unclassifiable
             break
     for label, ename, rest in entries:
         if ename == name and all(_arg_matches(p, args) for p in rest):

@@ -24,6 +24,7 @@ from .policy import MAX_WINDOW_S
 BUSY_TIMEOUT_S = 2.0
 MAX_EVENTS_PER_SESSION = 50_000
 RING_SIZE = 256
+RING_TTL_S = 30 * 86400
 GLOBAL = "global"
 
 _SCHEMA = (
@@ -161,6 +162,8 @@ class Tx:
 
     def prune(self, session: str, now: float) -> None:
         self.db.execute("DELETE FROM events WHERE ts < ?", (now - MAX_WINDOW_S,))
+        # forensic ring rows of long-dead sessions; trips (flags) and taint stay: they are sticky
+        self.db.execute("DELETE FROM ring WHERE ts < ?", (now - RING_TTL_S,))
         (n,) = self.db.execute("SELECT COUNT(*) FROM events WHERE session = ?", (session,)).fetchone()
         if n > MAX_EVENTS_PER_SESSION:  # rare: only then pay for the ordered delete
             self.db.execute("DELETE FROM events WHERE session = ? AND rowid NOT IN (SELECT rowid FROM events "

@@ -2,6 +2,36 @@
 
 ## Open
 
+### Hook watchdog and bounded path expansion (HIGH)
+
+**What:** a hook-wide watchdog that denies (exit 2) before Claude Code's hook timeout; no glob or realpath on remote paths; bounded, deadline-limited glob.
+
+**Why:** round-2 security review (NEW-1). Slow path expansion can push the hook past the host timeout, and the host then runs the tool (fail open).
+
+**Effort:** S-M
+**Priority:** P1
+**Depends on:** none.
+
+### Decoy-path argument forms (HIGH)
+
+**What:** normalize option prefixes on path words, fail closed when a path-scan cap is hit, and scan all string fields, not only known path keys.
+
+**Why:** round-2 review (remaining 5). Some argument forms that name a decoy file aren't resolved to its path.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** none.
+
+### Self-protect residuals (MEDIUM)
+
+**What:** cover Python startup files (`sitecustomize.py`, `.pth`) in site-packages, and stop `operator_paths` exempting an editable install's package from protection.
+
+**Why:** round-2 review (remaining 6). Same-user tampering class, documented in README Limits.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** none.
+
 ### Shared policy block
 
 **What:** move the `fuse:` block into the suite's shared policy.yaml. Add `fuse` to gate's `_V2_BLOCKS`, agentbastion's `_TOOL_BLOCKS`, and a bastionsupply doctor floor.

@@ -337,10 +337,7 @@ class Fuse:
 
     # taint spool: record() falls back here when the store stays busy
     def _spool(self, session: str, source: str) -> None:
-        path = self.policy.state_dir / f"{SPOOL}.jsonl"
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"session": session, "source": source}) + "\n")
+        spool_taint(self.policy, session, source)
 
     def _claim_spool(self) -> tuple[list[tuple[str, str]], list[Path]]:
         """Move the spool aside (atomic rename) and read every claimed spool file.
@@ -373,7 +370,8 @@ class Fuse:
         """Ring write in its own transaction: evidence, never the guarantee."""
         try:
             with self.store.tx() as t:
-                t.add_ring(s, tool, self.tokens.redact(text)[:RING_ARGS_CAP], verdict, now)
+                # slice first (with room for a token straddling the cut): redacting 1 MB is slow
+                t.add_ring(s, tool, self.tokens.redact(text[:RING_ARGS_CAP + 1024])[:RING_ARGS_CAP], verdict, now)
                 return t.ring(s) if want_ring else []
         except Exception:  # noqa: BLE001
             return []
@@ -393,6 +391,14 @@ class Fuse:
                 self.on_trip(session, decision)
             except Exception:  # noqa: BLE001 - a callback error never un-trips
                 pass
+
+
+def spool_taint(policy: FusePolicy, session: str, source: str) -> None:
+    """Append a taint the store couldn't take; the next check() merges it."""
+    path = policy.state_dir / f"{SPOOL}.jsonl"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"session": session, "source": source}) + "\n")
 
 
 def _release(claims: list[Path]) -> None:

@@ -161,6 +161,16 @@ that fit your work, and only then enforce the repeat detector.
 
 ## Limits (read these)
 
+**Known open issues in 0.1 (HIGH, fixes planned):**
+
+- **A crafted call can make the hook outlive Claude Code's hook timeout.** Expanding some path
+  arguments (remote or very broad paths) can take longer than the hook timeout. Claude Code then
+  treats the hook as failed and runs the tool, so that one call skips the fuse. A hook-wide
+  watchdog that denies before the timeout is the planned fix.
+- **Decoy-path taint can miss some ways of naming a decoy file in a command's arguments.**
+  Honeytokens in tool *results* and the other tripwires still apply, but a command that sends a
+  decoy file without the agent ever reading it may go unseen.
+
 - **Tamper-evident, not tamper-proof, against a same-user agent.** The agent's shell runs as you.
   Self-protect blocks the obvious ways to delete the fuse's state, edit `.claude/settings.json`
   (where the hook lives, and Claude Code reloads hooks when it changes) or run
@@ -192,8 +202,8 @@ that fit your work, and only then enforce the repeat detector.
   calling tools, keeps generating.
 - **A decoy MCP call that reaches the server trips every session**, because the server can't
   know which session called it. With the hook installed, the hook trips just that session first.
-- **Hook latency.** Each tool call starts a Python process, which costs about 100-300 ms on
-  Windows and less on Linux. The policy is cached as JSON so the hook doesn't import pyyaml.
+- **Hook latency.** Each tool call starts a Python process. Measured on Windows 11 with a wheel
+  install: p50 245 ms, p95 273 ms per tool call (a bare `python -c pass` is 59 ms). The policy is cached as JSON so the hook doesn't import pyyaml.
 - **Oversize inputs (> 1 MB) are refused, and oversize results taint the session** (fail closed,
   never partially scanned).
 - **Snapshots are evidence only.** Today's `bastiontrace analyze` loads them but doesn't score a

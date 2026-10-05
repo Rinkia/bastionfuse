@@ -17,6 +17,7 @@ the tally for dogfooding (`bastionfuse log`).
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -24,8 +25,10 @@ import sys
 import time
 from typing import Any, TextIO
 
-from .fuse import Decision, Fuse
+from .fuse import RECORD_RETRY_S, Decision, Fuse, spool_taint
 from .policy import FusePolicy, default_state_dir, load_policy, policy_from_dict
+from .rules import Oversize, TokenMatcher, flatten
+from .state import StoreBusy
 
 BLOCK = 2
 LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -33,11 +36,13 @@ _SKIP_POST_KEYS = ("tool_input", "transcript_path", "cwd", "session_id", "hook_e
                    "permission_mode", "tool_use_id", "tool_name")
 
 
-def resolve_policy(path: str | None) -> FusePolicy:
-    """Explicit path (flag or $BASTIONFUSE_POLICY) must load; otherwise use
-    <state_dir>/fuse.yaml or fuse.json if present, else the built-in defaults
-    (KILL file, self-protect, decoy MCP canaries and planted decoys still work)."""
-    explicit = path or os.environ.get("BASTIONFUSE_POLICY")
+def resolve_policy(path: str | None, *, use_env: bool = True) -> FusePolicy:
+    """Explicit path (flag, or $BASTIONFUSE_POLICY unless `use_env` is off) must
+    load; otherwise use <state_dir>/fuse.yaml or fuse.json if present, else the
+    built-in defaults (KILL file, self-protect, decoy MCP canaries and planted
+    decoys still work). The hook turns `use_env` off when `--home` is given, so an
+    env var from the agent's project can't swap the policy."""
+    explicit = path or (os.environ.get("BASTIONFUSE_POLICY") if use_env else None)
     if explicit:
         return load_policy(explicit)
     home = default_state_dir()
@@ -47,10 +52,10 @@ def resolve_policy(path: str | None) -> FusePolicy:
     return policy_from_dict({"policy_version": 2, "fuse": {}})
 
 
-def pre(stdin: TextIO, stderr: TextIO, policy_path: str | None = None) -> int:
+def pre(stdin: TextIO, stderr: TextIO, policy_path: str | None = None, *, use_env: bool = True) -> int:
     try:
         payload = _read(stdin)
-        policy = resolve_policy(policy_path)
+        policy = resolve_policy(policy_path, use_env=use_env)
         fuse = Fuse(policy)
         tool = str(payload.get("tool_name") or "")
         session = str(payload.get("session_id") or "default")
@@ -66,21 +71,51 @@ def pre(stdin: TextIO, stderr: TextIO, policy_path: str | None = None) -> int:
     return BLOCK
 
 
-def post(stdin: TextIO, stderr: TextIO, policy_path: str | None = None) -> int:
+def post(stdin: TextIO, stderr: TextIO, policy_path: str | None = None, *, use_env: bool = True) -> int:
     """Scan the tool's response for honeytokens (taints the session). PostToolUse
-    can't undo a call, so errors here are reported but never block."""
+    can't undo a call, so errors here are reported but never block. A store too
+    busy to even open still never drops a taint: it goes to the spool."""
     try:
         payload = _read(stdin)
-        policy = resolve_policy(policy_path)
+        policy = resolve_policy(policy_path, use_env=use_env)
         response = {k: v for k, v in payload.items() if k not in _SKIP_POST_KEYS}
         session = str(payload.get("session_id") or "default")
         tool = str(payload.get("tool_name") or "")
-        source = Fuse(policy).record(tool, response, session=session)
+        try:
+            fuse = _open_fuse(policy)
+        except StoreBusy:
+            source = _scan_only(policy, tool, response)
+            if source:
+                spool_taint(policy, session, source)
+                _log(policy, session, tool, None, taint=source)
+            return 0
+        source = fuse.record(tool, response, session=session)
         if source:
             _log(policy, session, tool, None, taint=source)
     except Exception as e:  # noqa: BLE001
         stderr.write(f"bastionfuse: post-hook error ({type(e).__name__}: {e})\n")
     return 0
+
+
+def _open_fuse(policy: FusePolicy) -> Fuse:
+    """Opening the store runs a schema transaction; retry it like record() does."""
+    deadline = time.monotonic() + RECORD_RETRY_S
+    while True:
+        try:
+            return Fuse(policy)
+        except StoreBusy:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+def _scan_only(policy: FusePolicy, tool: str, response: Any) -> str | None:
+    """record()'s scan without the store."""
+    try:
+        hit = TokenMatcher(policy.honeytokens).find(flatten(response))
+    except Oversize:
+        return f"{tool} result too large to scan"
+    return f"honeytoken #{hashlib.sha256(hit.encode()).hexdigest()[:8]} in a {tool} result" if hit else None
 
 
 def _read(stdin: TextIO) -> dict:
@@ -123,7 +158,7 @@ def settings_snippet(command: str = "bastionfuse", home: str | None = None) -> d
     return {"hooks": {"PreToolUse": hook("pre"), "PostToolUse": hook("post"), "PostToolUseFailure": hook("post")}}
 
 
-def main_hook(event: str, policy_path: str | None = None) -> int:
+def main_hook(event: str, policy_path: str | None = None, *, home_pinned: bool = False) -> int:
     """Read hook JSON as UTF-8 bytes: the Windows console codepage would mangle it
     (and with it every Unicode-folding defense)."""
     raw = sys.stdin.buffer.read().decode("utf-8", "replace")
@@ -133,5 +168,5 @@ def main_hook(event: str, policy_path: str | None = None) -> int:
         pass
     stdin = io.StringIO(raw)
     if event == "pre":
-        return pre(stdin, sys.stderr, policy_path)
-    return post(stdin, sys.stderr, policy_path)
+        return pre(stdin, sys.stderr, policy_path, use_env=not home_pinned)
+    return post(stdin, sys.stderr, policy_path, use_env=not home_pinned)

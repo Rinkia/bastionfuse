@@ -25,10 +25,11 @@ from pathlib import Path
 from . import __version__
 from .fuse import Fuse
 from .hook import main_hook, resolve_policy, settings_snippet
-from .policy import PolicyError, default_state_dir
+from .policy import MAX_TOKENS, PolicyError, default_state_dir
 from .rules import new_token
 
 TOKEN_KINDS = ("aws", "github", "openai", "generic")
+TOKENS_PER_PLANT = 3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if args.cmd == "hook":
-        return main_hook(args.event, args.policy)
+        return main_hook(args.event, args.policy, home_pinned=args.home is not None)
     if args.cmd == "decoy-mcp":
         from .decoy_mcp import main as decoy_main
         return decoy_main()
@@ -101,6 +102,11 @@ def _plant(args, policy) -> int:
     """Write a decoy .env file per --dir and register its tokens and path."""
     tokens_file = policy.state_dir / "honeytokens.txt"
     decoys_file = policy.state_dir / "decoys.txt"
+    room = (MAX_TOKENS - len(policy.honeytokens)) // TOKENS_PER_PLANT
+    if len(args.dir) > room:  # past the cap every hook call would fail to load the policy
+        print(f"bastionfuse: refusing to plant {len(args.dir)} decoy(s): only room for {room} more "
+              f"(at most {MAX_TOKENS} honeytokens, {len(policy.honeytokens)} registered)", file=sys.stderr)
+        return 2
     policy.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     for d in args.dir:
         target = Path(d).expanduser() / args.name

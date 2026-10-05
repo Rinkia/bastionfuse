@@ -22,6 +22,7 @@ import io
 import json
 import os
 import sys
+import threading
 import time
 from typing import Any, TextIO
 
@@ -32,6 +33,8 @@ from .state import StoreBusy
 
 BLOCK = 2
 LOG_MAX_BYTES = 5 * 1024 * 1024
+HOOK_TIMEOUT_S = 15  # the timeout settings_snippet registers with Claude Code
+WATCHDOG_S = 10.0  # deny well before HOOK_TIMEOUT_S
 _SKIP_POST_KEYS = ("tool_input", "transcript_path", "cwd", "session_id", "hook_event_name",
                    "permission_mode", "tool_use_id", "tool_name")
 
@@ -153,7 +156,8 @@ def settings_snippet(command: str = "bastionfuse", home: str | None = None) -> d
     base = f'{command} --home "{home}"' if home else command
 
     def hook(event: str) -> list:
-        return [{"matcher": "", "hooks": [{"type": "command", "command": f"{base} hook {event}", "timeout": 15}]}]
+        return [{"matcher": "", "hooks": [{"type": "command", "command": f"{base} hook {event}",
+                                           "timeout": HOOK_TIMEOUT_S}]}]
     # PostToolUseFailure: a failed call's output (`cat decoy; false`) reaches the model too
     return {"hooks": {"PreToolUse": hook("pre"), "PostToolUse": hook("post"), "PostToolUseFailure": hook("post")}}
 
@@ -168,5 +172,26 @@ def main_hook(event: str, policy_path: str | None = None, *, home_pinned: bool =
         pass
     stdin = io.StringIO(raw)
     if event == "pre":
-        return pre(stdin, sys.stderr, policy_path, use_env=not home_pinned)
+        timer = start_watchdog(WATCHDOG_S, sys.stderr)
+        try:
+            return pre(stdin, sys.stderr, policy_path, use_env=not home_pinned)
+        finally:
+            timer.cancel()
     return post(stdin, sys.stderr, policy_path, use_env=not home_pinned)
+
+
+def start_watchdog(seconds: float, stderr: TextIO, exit_fn=os._exit) -> threading.Timer:
+    """Deny the call if the check runs too long. Claude Code treats a hook that hits
+    its timeout as failed and runs the tool, so a slow check must end in exit 2
+    before that happens. os._exit: the stuck work can't be interrupted, only abandoned."""
+    def fire() -> None:
+        try:
+            stderr.write(f"bastionfuse: check took longer than {seconds:g}s; tool call blocked to stay safe.\n")
+            stderr.flush()
+        finally:
+            exit_fn(BLOCK)
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+    return timer

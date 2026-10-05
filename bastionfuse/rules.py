@@ -17,6 +17,7 @@ import secrets
 import shlex
 import shutil
 import string
+import time
 import unicodedata
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
@@ -31,6 +32,7 @@ MAX_SHELL_COMMAND = 32_768  # longer shell commands are refused: classification 
 MAX_PATH_TOKENS = 2000
 MAX_GLOBS = 8
 MAX_GLOB_HITS = 32
+PATH_BUDGET_S = 2.0  # wall-clock budget for filesystem work (realpath, glob) per call
 MAX_DEPTH = 3  # nested `bash -c` / `powershell -enc` levels to unwrap
 
 
@@ -200,6 +202,7 @@ def path_candidates(tool_input: Any, cwd: str | None) -> set[str]:
     Windows short names (8.3) expanded and globs expanded (bounded)."""
     out: set[str] = set()
     words, globs = 0, 0
+    deadline = time.monotonic() + PATH_BUDGET_S
     if isinstance(tool_input, dict):  # path-bearing fields only: file content isn't a path
         tool_input = [v for k, v in tool_input.items() if str(k).casefold() in _PATH_KEYS]
     for s in _strings(tool_input if not isinstance(tool_input, str) else [tool_input], [64]):
@@ -215,6 +218,10 @@ def path_candidates(tool_input: Any, cwd: str | None) -> set[str]:
                     continue
                 p = os.path.join(cwd, p)
             out.add(_norm(p))
+            # filesystem work only on local paths, and only within the time budget:
+            # a remote path can block for tens of seconds (and contacts that host)
+            if _is_remote(p) or time.monotonic() > deadline:
+                continue
             if os.name == "nt" and "~" in p:
                 try:
                     out.add(_norm(os.path.realpath(p)))
@@ -222,16 +229,32 @@ def path_candidates(tool_input: Any, cwd: str | None) -> set[str]:
                     pass
             if any(c in p for c in "*?[") and globs < MAX_GLOBS:
                 globs += 1
-                try:
-                    hits = glob.glob(p, include_hidden=True) if _GLOB_HIDDEN else glob.glob(p)
-                except (OSError, ValueError, re.error):
-                    hits = []
-                for h in hits[:MAX_GLOB_HITS]:
-                    out.add(_norm(os.path.realpath(h)))
+                out |= _bounded_glob(p, deadline)
     return out
 
 
-_GLOB_HIDDEN = "include_hidden" in glob.glob.__code__.co_varnames
+def _is_remote(p: str) -> bool:
+    return bool(_REMOTE.match(p.replace("\\", "/")))
+
+
+def _bounded_glob(pattern: str, deadline: float) -> set[str]:
+    """Lazy glob: stop at MAX_GLOB_HITS or the deadline instead of listing everything."""
+    out: set[str] = set()
+    try:
+        it = glob.iglob(pattern, include_hidden=True) if _GLOB_HIDDEN else glob.iglob(pattern)
+        for h in it:
+            if _is_remote(h):
+                continue
+            out.add(_norm(os.path.realpath(h)))
+            if len(out) >= MAX_GLOB_HITS or time.monotonic() > deadline:
+                break
+    except (OSError, ValueError, re.error):
+        pass
+    return out
+
+
+_GLOB_HIDDEN = "include_hidden" in glob.iglob.__code__.co_varnames
+_REMOTE = re.compile(r"^(?://|[a-z][a-z0-9+.-]*://)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)

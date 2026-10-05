@@ -1,7 +1,8 @@
 """Claude Code hook adapter.
 
 Claude Code runs `bastionfuse hook pre` before every tool call (PreToolUse) and
-`bastionfuse hook post` after a successful one (PostToolUse), passing one JSON
+`bastionfuse hook post` after it (PostToolUse, and PostToolUseFailure for a call
+that failed), passing one JSON
 object on stdin (session_id, cwd, tool_name, tool_input; post adds the tool's
 response).
 
@@ -16,6 +17,7 @@ the tally for dogfooding (`bastionfuse log`).
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -109,15 +111,27 @@ def _log(policy: FusePolicy, session: str, tool: str, decision: Decision | None,
         pass
 
 
-def settings_snippet(command: str = "bastionfuse") -> dict:
-    """The Claude Code settings block that registers the fuse for every tool."""
+def settings_snippet(command: str = "bastionfuse", home: str | None = None) -> dict:
+    """The Claude Code settings block that registers the fuse for every tool. With
+    `home`, the state dir is baked into the command (`--home`), so an environment
+    variable the agent's project sets can't point the hook at an empty state dir."""
+    base = f'{command} --home "{home}"' if home else command
+
     def hook(event: str) -> list:
-        return [{"matcher": "", "hooks": [{"type": "command", "command": f"{command} hook {event}", "timeout": 15}]}]
-    return {"hooks": {"PreToolUse": hook("pre"), "PostToolUse": hook("post")}}
+        return [{"matcher": "", "hooks": [{"type": "command", "command": f"{base} hook {event}", "timeout": 15}]}]
+    # PostToolUseFailure: a failed call's output (`cat decoy; false`) reaches the model too
+    return {"hooks": {"PreToolUse": hook("pre"), "PostToolUse": hook("post"), "PostToolUseFailure": hook("post")}}
 
 
 def main_hook(event: str, policy_path: str | None = None) -> int:
+    """Read hook JSON as UTF-8 bytes: the Windows console codepage would mangle it
+    (and with it every Unicode-folding defense)."""
+    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+    stdin = io.StringIO(raw)
     if event == "pre":
-        return pre(sys.stdin, sys.stderr, policy_path)
-    return post(sys.stdin, sys.stderr, policy_path)
-
+        return pre(stdin, sys.stderr, policy_path)
+    return post(stdin, sys.stderr, policy_path)

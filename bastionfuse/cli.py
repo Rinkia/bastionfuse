@@ -18,13 +18,14 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import os
 import sys
 from pathlib import Path
 
 from . import __version__
 from .fuse import Fuse
 from .hook import main_hook, resolve_policy, settings_snippet
-from .policy import PolicyError
+from .policy import PolicyError, default_state_dir
 from .rules import new_token
 
 TOKEN_KINDS = ("aws", "github", "openai", "generic")
@@ -33,6 +34,8 @@ TOKEN_KINDS = ("aws", "github", "openai", "generic")
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.home:  # the flag wins over the environment (the agent's project can set env vars)
+        os.environ["BASTIONFUSE_HOME"] = str(Path(args.home).expanduser())
     if args.cmd is None:
         parser.print_help()
         return 0
@@ -46,8 +49,10 @@ def main(argv: list[str] | None = None) -> int:
         outcomes = run(sys.stdout)
         return 0 if all(o.stopped_at for o in outcomes) else 1
     if args.cmd == "install-hook":
-        print(json.dumps(settings_snippet(args.command), indent=2))
-        print("\nAdd this block to ~/.claude/settings.json (or a managed settings file the agent can't edit).",
+        home = str(default_state_dir().resolve())
+        print(json.dumps(settings_snippet(args.command, home), indent=2))
+        print("\nAdd this block to ~/.claude/settings.json (better: a managed settings file the agent can't "
+              f"edit).\nDecoy tools: claude mcp add bastionfuse-decoy -- {args.command} --home \"{home}\" decoy-mcp",
               file=sys.stderr)
         return 0
     if args.cmd == "tokens":
@@ -122,14 +127,21 @@ def _log(args, policy) -> int:
     except OSError:
         print("no log yet")
         return 0
-    records = [json.loads(ln) for ln in lines if ln.strip()]
+    records = []
+    for ln in lines:
+        try:
+            rec = json.loads(ln)
+        except ValueError:
+            continue  # a damaged line never hides the rest of the tally
+        if isinstance(rec, dict):
+            records.append(rec)
     if not args.summary:
         for r in records[-args.tail:]:
             print(json.dumps(r))
         return 0
-    trips = collections.Counter(r["rule"] for r in records if r.get("tripped") and not r.get("allowed"))
-    shadow = collections.Counter(n.split("(")[0].strip() for r in records for n in r.get("shadow", []))
-    sessions = {r["session"] for r in records}
+    trips = collections.Counter(str(r.get("rule")) for r in records if r.get("tripped") and not r.get("allowed"))
+    shadow = collections.Counter(str(n).split("(")[0].strip() for r in records for n in r.get("shadow") or [])
+    sessions = {str(r.get("session")) for r in records}
     print(json.dumps({"records": len(records), "sessions": len(sessions), "trips_by_rule": trips,
                       "shadow_notes": shadow, "taints": sum(1 for r in records if r.get("taint"))}, indent=2))
     return 0
@@ -142,6 +154,7 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bastionfuse", description="Kill switch and tripwires for AI agents.")
     p.add_argument("--version", action="version", version=f"bastionfuse {__version__}")
     p.add_argument("--policy", help="policy file (default: $BASTIONFUSE_POLICY, then <state_dir>/fuse.yaml)")
+    p.add_argument("--home", help="state dir (default: $BASTIONFUSE_HOME, then ~/.bastionfuse)")
     sub = p.add_subparsers(dest="cmd")
     h = sub.add_parser("hook", help="Claude Code hook entry point")
     h.add_argument("event", choices=("pre", "post"))

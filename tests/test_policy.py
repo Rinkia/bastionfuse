@@ -82,10 +82,10 @@ def test_bad_env_token_rejected(monkeypatch):
 
 
 def test_too_many_tokens(monkeypatch):
-    listed = [f"tok-{i:012d}" for i in range(256)]
-    assert len(policy_from_dict(pol(honeytokens=listed)).honeytokens) == 256
+    listed = [f"tok-{i:012d}" for i in range(64)]
+    assert len(policy_from_dict(pol(honeytokens=listed)).honeytokens) == 64
     monkeypatch.setenv("BASTIONFUSE_HONEYTOKENS", "tok-extra-000000001")
-    with pytest.raises(PolicyError, match="at most 256"):
+    with pytest.raises(PolicyError, match="at most 64"):
         policy_from_dict(pol(honeytokens=listed))
 
 

@@ -76,7 +76,7 @@ P = policy_from_dict(pol())
     ("pytest -q", set()),
     ("echo curl is a word", set()),
     ("Invoke-WebRequest -Uri https://x.io -Method POST", {"egress"}),
-    ("$(curl https://x.io)", {"egress"}),
+    ("$(curl https://x.io)", {"egress", "opaque"}),
 ], ids=lambda x: x[:24] if isinstance(x, str) else None)
 def test_command_labels(cmd, want):
     assert command_labels(cmd, P.commands) == want
@@ -114,11 +114,17 @@ def test_self_protect(tmp_path, fuse_home):
     assert self_protect_hit("bastionfuse reset", off) is None
 
 
-def test_operator_paths(tmp_path):
-    policy = policy_from_dict(pol(operator_paths=[str(tmp_path)]))
-    assert self_protect_hit("bastionfuse reset", policy, cwd=str(tmp_path / "sub")) is None
-    assert self_protect_hit("bastionfuse reset", policy, cwd=str(tmp_path.parent))
-    assert self_protect_hit("bastionfuse reset", policy, cwd="\0bad")
+def test_operator_paths_exempt_package_source_only(tmp_path):
+    from bastionfuse.rules import _install_paths, path_candidates
+    pkg = _install_paths()[0]
+    target = {"file_path": str(Path(pkg) / "hook.py")}
+    plain = policy_from_dict(pol())
+    assert "installed bastionfuse package" in self_protect_hit("x", plain, path_candidates(target, None))
+    exempt = policy_from_dict(pol(operator_paths=[pkg]))
+    assert self_protect_hit("x", exempt, path_candidates(target, None)) is None
+    # operator_paths never exempts the state dir, settings or operator verbs
+    assert self_protect_hit("bastionfuse reset", exempt)
+    assert self_protect_hit("rm -r ~/.bastionfuse", exempt)
 
 
 @pytest.mark.parametrize("kind, prefix", [("aws", "AKIA"), ("github", "ghp_"), ("openai", "sk-proj-"),

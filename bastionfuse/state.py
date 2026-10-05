@@ -161,8 +161,10 @@ class Tx:
 
     def prune(self, session: str, now: float) -> None:
         self.db.execute("DELETE FROM events WHERE ts < ?", (now - MAX_WINDOW_S,))
-        self.db.execute("DELETE FROM events WHERE session = ? AND rowid NOT IN (SELECT rowid FROM events "
-                        "WHERE session = ? ORDER BY ts DESC LIMIT ?)", (session, session, MAX_EVENTS_PER_SESSION))
+        (n,) = self.db.execute("SELECT COUNT(*) FROM events WHERE session = ?", (session,)).fetchone()
+        if n > MAX_EVENTS_PER_SESSION:  # rare: only then pay for the ordered delete
+            self.db.execute("DELETE FROM events WHERE session = ? AND rowid NOT IN (SELECT rowid FROM events "
+                            "WHERE session = ? ORDER BY ts DESC LIMIT ?)", (session, session, MAX_EVENTS_PER_SESSION))
 
     def sessions(self) -> list[str]:
         rows = self.db.execute("SELECT session FROM events UNION SELECT session FROM taint "

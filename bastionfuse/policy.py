@@ -34,7 +34,7 @@ DECOY_TOOL_PREFIX = "mcp__bastionfuse-decoy__"
 
 MIN_TOKEN_LEN = 12  # shorter tokens collide with ordinary text
 MAX_TOKEN_LEN = 256
-MAX_TOKENS = 256
+MAX_TOKENS = 64  # each token has ~30 encoded forms searched in every call; keeps the hook fast
 MAX_LIST = 256
 MAX_WINDOW_S = 86400
 
@@ -61,16 +61,19 @@ DEFAULT_COMMANDS: dict[str, tuple[str, ...]] = {
     "egress": (
         "curl", "wget", "nc", "ncat", "netcat", "telnet", "socat", "ftp", "tftp", "scp",
         "sftp", "ssh", "rsync", "invoke-webrequest", "iwr", "invoke-restmethod", "irm",
-        "git push", "npm publish", "twine upload", "gh gist create", "gh release upload",
+        "git push", "npm publish", "twine upload", "gh gist create", "gh release upload", "gh api",
+        "openssl s_client", "nslookup", "dig", "docker push", "aws s3 cp", "aws s3 sync", "aws s3 mv",
+        "gsutil cp", "rclone", "kubectl cp", "smbclient", "mail", "sendmail", "mutt", "send-mailmessage",
     ),
     "fetch": (
         "pip install", "pip download", "uv pip", "uv add", "npm install", "npm i", "npm ci",
         "yarn add", "pnpm add", "git fetch", "git pull", "git clone", "cargo add", "go get",
     ),
     "destructive": (
-        "rm -r", "rm -R", "rmdir", "rd", "del", "remove-item", "shred", "mkfs", "dd",
-        "git reset --hard", "git clean -f", "git push --force", "git push -f",
-        "git branch -D", "drop table", "truncate",
+        "rm -r", "rm -R", "rm --recursive", "rmdir", "rd", "del", "remove-item", "shred", "mkfs", "dd",
+        "find -delete", "git reset --hard", "git clean -f", "git push --force", "git push -f",
+        "git push --force-with-lease", "git push --delete", "git push -d", "git branch -D", "drop table",
+        "truncate",
     ),
     "read_only": (),
 }

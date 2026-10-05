@@ -3,19 +3,21 @@
 Order inside check() (first hit wins; cheap and certain first):
 
   1  operator signals: KILL file, kill env, stale heartbeat  -> trip (global)
-  2  already tripped                                          -> deny (degrade: read-only passes)
+  2  already tripped                                          -> deny (degrade: local read-only passes)
   3  canary tool                                              -> trip
-  4  honeytoken (raw/hex/url/base64) in the input             -> trip
+  4  honeytoken (raw/hex/base32/base64/...) in the input      -> trip
   5  decoy path in the input                                  -> taint session
-  6  self-protect: touches the fuse, its policy or settings   -> deny, no trip
-  7  classify: egress | fetch | destructive | read_only
-  8  tainted session + egress                                 -> trip
+  6  self-protect: touches the fuse, its install or settings  -> deny, no trip
+  7  classify: egress | fetch | destructive | read_only | opaque
+  8  tainted session + anything that can send data           -> trip
   9  budgets (operator-written enforce, defaults shadow)      -> trip / log
  10  repeat detector                                          -> shadow by default
  11  allow
 
-A trip is sticky: it holds until an operator resets it. Any internal error makes
-check() deny (fail closed).
+The CPU-heavy scans run before the state lock is taken; the trip is committed in
+its own transaction before any forensics are written, so a forensics failure can
+never undo it. A trip is sticky until an operator resets it. Any internal error
+makes check() deny (fail closed).
 """
 
 from __future__ import annotations
@@ -24,16 +26,24 @@ import functools
 import hashlib
 import json
 import os
+import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from .policy import FusePolicy
-from .rules import Oversize, PathMatcher, TokenMatcher, classify, flatten, hosts_of, self_protect_hit
+from .rules import (OPAQUE, Oversize, PathMatcher, TokenMatcher, classify, flatten, hosts_of, path_candidates,
+                    self_protect_hit)
 from .state import GLOBAL, Store, StoreBusy, StoreCorrupt, Tx
 
 RING_ARGS_CAP = 4096  # bytes of args kept per call in the forensic ring
+MAX_TRIP_FILES = 500
+RECORD_RETRY_S = 8.0  # PostToolUse can't undo anything, so waiting for the lock costs nothing
+SPOOL = "taint-spool"
+_SENDS = frozenset({"egress", "fetch", OPAQUE})
+_REMOTE_PATH = re.compile(r"^\s*(?:\\\\|//|[a-z][a-z0-9+.-]*://)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,20 @@ class _Verdict:
     rule: str = ""
     trip: bool = False
     shadow: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _Facts:
+    """Everything about a call that needs no state. Computed outside the lock."""
+    text: str
+    token: str | None
+    decoy: str | None
+    protect: str | None
+    labels: frozenset[str]
+    hosts: frozenset[str]
+    size: int
+    repeat_key: str
+    remote_path: bool
 
 
 class Fuse:
@@ -92,7 +116,9 @@ class Fuse:
 
     def record(self, tool: str, result: Any, *, session: str | None = None) -> str | None:
         """Scan a tool result. A honeytoken in it taints the session (the agent read a
-        decoy); a later egress call then trips. Returns the taint source, if any."""
+        decoy); a later call that can send data then trips. Returns the taint source.
+        A busy store is retried, then the taint goes to a spool the next check merges,
+        so lock contention can never drop it."""
         s = session or self.session
         try:
             text = flatten(result)
@@ -101,8 +127,17 @@ class Fuse:
         except Oversize:
             source = f"{tool} result too large to scan"  # fail closed: treat as tainted
         if source:
-            with self.store.tx() as t:
-                t.set_taint(s, source, self.clock())
+            deadline = time.monotonic() + RECORD_RETRY_S
+            while True:
+                try:
+                    with self.store.tx() as t:
+                        t.set_taint(s, source, self.clock())
+                    break
+                except StoreBusy:
+                    if time.monotonic() >= deadline:
+                        self._spool(s, source)
+                        break
+                    time.sleep(0.1)
         return source
 
     def trip(self, reason: str, *, session: str | None = None, global_: bool = False, rule: str = "operator") -> None:
@@ -152,59 +187,75 @@ class Fuse:
 
     # --- internals -----------------------------------------------------------
 
+    def _facts(self, tool: str, tool_input: Any, cwd: str | None) -> _Facts:
+        text = flatten(tool_input)
+        candidates = path_candidates(tool_input, cwd)
+        labels = frozenset(classify(tool, tool_input, self.policy))
+        return _Facts(
+            text=text,
+            token=self.tokens.find(text),
+            decoy=self.decoys.find(text, candidates),
+            protect=self_protect_hit(text, self.policy, candidates),
+            labels=labels,
+            hosts=frozenset(hosts_of(text)) if "egress" in labels else frozenset(),
+            size=len(text.encode("utf-8")),
+            repeat_key=hashlib.sha256(f"{tool}\0{text}".encode()).hexdigest()[:16],
+            remote_path=any(_REMOTE_PATH.match(v) for v in _string_values(tool_input)),
+        )
+
     def _check(self, s: str, tool: str, tool_input: Any, cwd: str | None) -> Decision:
         try:
-            text = flatten(tool_input)
+            facts = self._facts(tool, tool_input, cwd)
         except Oversize as e:
             return Decision(False, f"tool input too large to scan ({e}); refused", "oversize")
         now = self.clock()
         signal = self._signal()
+        spooled, claims = self._claim_spool()
         with self.store.tx() as t:
+            for sess, source in spooled:
+                t.set_taint(sess, source, now)
             if signal:
                 t.set_flag(GLOBAL, signal, "signal", now)
             prior = t.flag(GLOBAL) or t.flag(s)
             if prior:
-                d = self._tripped(tool, tool_input, text, prior, cwd)
-                t.add_ring(s, tool, self._ring_args(text), "allowed" if d.allowed else "blocked", now)
-                return d
-            v = self._evaluate(t, s, tool, tool_input, text, cwd, now)
-            t.add_ring(s, tool, self._ring_args(text), "tripped" if v.trip else
-                       ("allowed" if v.allowed else "blocked"), now)
-            if v.trip:
-                t.set_flag(s, v.reason, v.rule, now)
-            t.prune(s, now)
-            ring = t.ring(s) if v.trip else []
-        d = Decision(v.allowed and not v.trip, self._deny_text(v.reason, v.rule) if v.trip else v.reason,
-                     v.rule, v.trip, tuple(v.shadow))
-        if v.trip:
+                d = self._tripped(tool, facts, prior)
+                v = None
+            else:
+                v = self._evaluate(t, s, tool, facts, now)
+                if v.trip:
+                    t.set_flag(s, v.reason, v.rule, now)
+                t.prune(s, now)
+        _release(claims)
+        if v is not None:
+            d = Decision(v.allowed and not v.trip, self._deny_text(v.reason, v.rule) if v.trip else v.reason,
+                         v.rule, v.trip, tuple(v.shadow))
+        verdict = "tripped" if v is not None and v.trip else ("allowed" if d.allowed else "blocked")
+        ring = self._forensics(s, tool, facts.text, verdict, now, want_ring=v is not None and v.trip)
+        if v is not None and v.trip:
             self._after_trip(s, d, ring)
         return d
 
-    def _evaluate(self, t: Tx, s: str, tool: str, tool_input: Any, text: str, cwd: str | None,
-                  now: float) -> _Verdict:
+    def _evaluate(self, t: Tx, s: str, tool: str, f: _Facts, now: float) -> _Verdict:
         p = self.policy
         if p.is_canary(tool):
             return _Verdict(False, f"called canary tool '{tool}' (no legitimate flow uses it)", "canary", True)
-        hit = self.tokens.find(text)
-        if hit:
-            return _Verdict(False, f"honeytoken {self._token_id(hit)} in the input of '{tool}'", "honeytoken", True)
-        decoy = self.decoys.find(text)
-        if decoy:
-            t.set_taint(s, f"decoy path {decoy} touched by {tool}", now)
-        why = self_protect_hit(text, p, cwd)
-        if why:
-            return _Verdict(False, f"bastionfuse blocked '{tool}': it {why}", "self-protect")
-        labels = classify(tool, tool_input, p)
+        if f.token:
+            return _Verdict(False, f"honeytoken {self._token_id(f.token)} in the input of '{tool}'", "honeytoken",
+                            True)
+        if f.decoy:
+            t.set_taint(s, f"decoy path {f.decoy} touched by {tool}", now)
+        if f.protect:
+            return _Verdict(False, f"bastionfuse blocked '{tool}': it {f.protect}", "self-protect")
         taint = t.taint(s)
-        if taint and "egress" in labels:
-            return _Verdict(False, f"egress via '{tool}' after the session touched a decoy ({taint})",
+        if taint and (f.labels & _SENDS or (tool.startswith("mcp__") and "read_only" not in f.labels)):
+            return _Verdict(False, f"'{tool}' can send data out, and this session touched a decoy ({taint})",
                             "taint-egress", True)
         v = _Verdict()
-        self._budgets(t, s, tool, labels, text, now, v)
-        self._repeat(t, s, tool, text, now, v)
+        self._budgets(t, s, tool, f, now, v)
+        self._repeat(t, s, tool, f, now, v)
         return v
 
-    def _budgets(self, t: Tx, s: str, tool: str, labels: set[str], text: str, now: float, v: _Verdict) -> None:
+    def _budgets(self, t: Tx, s: str, tool: str, f: _Facts, now: float, v: _Verdict) -> None:
         p, b = self.policy, self.policy.budgets
         over: list[tuple[str, str, str]] = []  # (name, detail, action)
 
@@ -214,26 +265,24 @@ class Fuse:
 
         check_count("calls", "call", None, b.get("calls"))
         for label in ("egress", "fetch", "destructive"):
-            if label in labels:
+            if label in f.labels:
                 check_count(label, "label", label, b.get(label))
         check_count(f"tool {tool}", "tool", tool, p.tool_budgets.get(tool))
-        hosts = hosts_of(text) if "egress" in labels else set()
-        if "egress" in labels:
+        if "egress" in f.labels:
             hb, bb = b.get("egress_hosts"), b.get("bytes_out")
             if hb is not None:
-                seen = t.distinct(s, "host", now - hb.window_s) | hosts
+                seen = t.distinct(s, "host", now - hb.window_s) | f.hosts
                 if len(seen) > hb.max:
                     over.append(("egress_hosts", f"{len(seen)} distinct hosts in {hb.window_s}s (max {hb.max})",
                                  hb.action))
-            size = len(text.encode("utf-8", "surrogatepass"))
-            if bb is not None and t.total(s, "bytes", now - bb.window_s) + size > bb.max:
+            if bb is not None and t.total(s, "bytes", now - bb.window_s) + f.size > bb.max:
                 over.append(("bytes_out", f"more than {bb.max} bytes out in {bb.window_s}s", bb.action))
-            t.add_event(s, "bytes", "*", now, size)
+            t.add_event(s, "bytes", "*", now, f.size)
         t.add_event(s, "call", "*", now)
-        for label in labels & {"egress", "fetch", "destructive"}:
+        for label in f.labels & {"egress", "fetch", "destructive"}:
             t.add_event(s, "label", label, now)
         t.add_event(s, "tool", tool, now)
-        for h in hosts:
+        for h in f.hosts:
             t.add_event(s, "host", h, now)
         for name, detail, action in over:
             if action == "enforce":
@@ -242,13 +291,12 @@ class Fuse:
                 return
             v.shadow.append(f"would trip: budget {name} ({detail})")
 
-    def _repeat(self, t: Tx, s: str, tool: str, text: str, now: float, v: _Verdict) -> None:
+    def _repeat(self, t: Tx, s: str, tool: str, f: _Facts, now: float, v: _Verdict) -> None:
         r = self.policy.repeat
         if r.action == "off" or v.trip:
             return
-        key = hashlib.sha256(f"{tool}\0{text}".encode("utf-8", "surrogatepass")).hexdigest()[:16]
-        n = t.count(s, "repeat", key, now - r.window_s) + 1
-        t.add_event(s, "repeat", key, now)
+        n = t.count(s, "repeat", f.repeat_key, now - r.window_s) + 1
+        t.add_event(s, "repeat", f.repeat_key, now)
         if n > r.max:
             detail = f"same '{tool}' call {n} times in {r.window_s}s"
             if r.action == "enforce":
@@ -256,10 +304,10 @@ class Fuse:
             else:
                 v.shadow.append(f"would trip: repeat ({detail})")
 
-    def _tripped(self, tool: str, tool_input: Any, text: str, prior: tuple, cwd: str | None) -> Decision:
+    def _tripped(self, tool: str, f: _Facts, prior: tuple) -> Decision:
         reason, rule, _ts = prior
-        if (self.policy.mode == "degrade" and "read_only" in classify(tool, tool_input, self.policy)
-                and not self.tokens.find(text) and not self_protect_hit(text, self.policy, cwd)):
+        if (self.policy.mode == "degrade" and "read_only" in f.labels and not f.token and not f.protect
+                and not f.remote_path):
             return Decision(True, f"fuse tripped ({rule}); degraded mode allows read-only '{tool}'", rule, True)
         return Decision(False, self._deny_text(reason, rule), rule, True)
 
@@ -267,7 +315,7 @@ class Fuse:
         if self.policy.mode == "pause":
             tail = "Paused for human review: an operator must inspect the trip and reset the fuse."
         elif self.policy.mode == "degrade":
-            tail = "Degraded: only read-only tools run until an operator resets the fuse."
+            tail = "Degraded: only local read-only tools run until an operator resets the fuse."
         else:
             tail = "All tool calls are stopped until an operator resets the fuse."
         return f"bastionfuse TRIPPED ({rule}): {reason}. {tail}"
@@ -287,12 +335,52 @@ class Fuse:
                 return f"supervisor heartbeat stale ({int(age)}s > {p.heartbeat.stale_s}s)"
         return None
 
+    # taint spool: record() falls back here when the store stays busy
+    def _spool(self, session: str, source: str) -> None:
+        path = self.policy.state_dir / f"{SPOOL}.jsonl"
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"session": session, "source": source}) + "\n")
+
+    def _claim_spool(self) -> tuple[list[tuple[str, str]], list[Path]]:
+        """Move the spool aside (atomic rename) and read every claimed spool file.
+        Claimed files are deleted only after the taint commits (_release)."""
+        d = self.policy.state_dir
+        main = d / f"{SPOOL}.jsonl"
+        if main.exists():
+            try:
+                os.replace(main, d / f"{SPOOL}.claim.{uuid.uuid4().hex}.jsonl")
+            except OSError:
+                pass
+        out: list[tuple[str, str]] = []
+        claimed: list[Path] = []
+        try:
+            claims = list(d.glob(f"{SPOOL}.claim.*.jsonl"))
+        except OSError:
+            claims = []
+        for c in claims[:64]:
+            try:
+                for line in c.read_text(encoding="utf-8").splitlines()[:10_000]:
+                    rec = json.loads(line)
+                    if isinstance(rec, dict) and isinstance(rec.get("session"), str):
+                        out.append((rec["session"][:256], str(rec.get("source", "spooled taint"))[:300]))
+                claimed.append(c)
+            except (OSError, ValueError):
+                continue
+        return out, claimed
+
+    def _forensics(self, s: str, tool: str, text: str, verdict: str, now: float, *, want_ring: bool) -> list:
+        """Ring write in its own transaction: evidence, never the guarantee."""
+        try:
+            with self.store.tx() as t:
+                t.add_ring(s, tool, self.tokens.redact(text)[:RING_ARGS_CAP], verdict, now)
+                return t.ring(s) if want_ring else []
+        except Exception:  # noqa: BLE001
+            return []
+
     def _token_id(self, token: str | None) -> str:
         """Never echo a honeytoken back: the agent would learn which strings are decoys."""
         return "#" + hashlib.sha256((token or "").encode()).hexdigest()[:8]
-
-    def _ring_args(self, text: str) -> str:
-        return self.tokens.redact(text)[:RING_ARGS_CAP]
 
     def _after_trip(self, session: str, decision: Decision, ring: list) -> None:
         if self.policy.snapshot:
@@ -307,6 +395,26 @@ class Fuse:
                 pass
 
 
+def _release(claims: list[Path]) -> None:
+    for c in claims:
+        try:
+            c.unlink()
+        except OSError:
+            pass
+
+
+def _string_values(value: Any, depth: int = 0) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if depth > 4:
+        return []
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _string_values(v, depth + 1)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _string_values(v, depth + 1)]
+    return []
+
+
 def _flag_dict(flag: tuple | None) -> dict | None:
     if flag is None:
         return None
@@ -316,7 +424,8 @@ def _flag_dict(flag: tuple | None) -> dict | None:
 
 def write_snapshot(policy: FusePolicy, session: str, decision: Decision, ring: list, now: float) -> Path:
     """Write the session's recent calls as a bastiontrace v1 trace (evidence only:
-    today's analyzer doesn't score fuse trips as landings)."""
+    today's analyzer doesn't score fuse trips as landings). Keeps the newest
+    MAX_TRIP_FILES snapshots."""
     sid = hashlib.sha256(session.encode()).hexdigest()[:10]
     out_dir = policy.state_dir / "trips"
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -337,4 +446,10 @@ def write_snapshot(policy: FusePolicy, session: str, decision: Decision, ring: l
         event["args"] = parsed if isinstance(parsed, dict) else {"raw": args}
         lines.append(json.dumps(event))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    old = sorted(out_dir.glob("*.jsonl"))[:-MAX_TRIP_FILES]
+    for f in old:
+        try:
+            f.unlink()
+        except OSError:
+            pass
     return path

@@ -2,13 +2,14 @@
 
 Register it under the name `bastionfuse-decoy`:
 
-    claude mcp add bastionfuse-decoy -- bastionfuse decoy-mcp
+    claude mcp add bastionfuse-decoy -- bastionfuse --home ~/.bastionfuse decoy-mcp
 
 Its tools then show up as `mcp__bastionfuse-decoy__<tool>`, and the fuse hook
 treats any call to that prefix as a canary: it trips before the call reaches this
 server. If a call does arrive (no hook installed, or a client other than Claude
 Code), the server trips the GLOBAL fuse itself, since it can't know the session,
-and returns an error. A compromised agent reaching for these tools is an alarm
+and returns an error. Pass the same `--home` as the hook, or the trip lands in a
+different state dir. A compromised agent reaching for these tools is an alarm
 for every session.
 
 Newline-delimited JSON-RPC 2.0 over stdio, stdlib only.
@@ -66,7 +67,7 @@ def handle(msg: Any, on_call: Callable[[str], None]) -> dict | None:
         return _result(mid, {"tools": list(DECOY_TOOLS)})
     if method == "tools/call":
         name = params.get("name")
-        if name not in _NAMES:
+        if not isinstance(name, str) or name not in _NAMES:
             return _error(mid, -32602, f"unknown tool {name!r}")
         on_call(str(name))
         return _result(mid, {"isError": True, "content": [{"type": "text", "text": "Permission denied."}]})
@@ -83,7 +84,10 @@ def serve(stdin: TextIO, stdout: TextIO, on_call: Callable[[str], None]) -> None
         except ValueError:
             reply = _error(None, -32700, "parse error")
         else:
-            reply = handle(msg, on_call)
+            try:
+                reply = handle(msg, on_call)
+            except Exception:  # noqa: BLE001 - one bad message never kills the decoy
+                reply = _error(msg.get("id") if isinstance(msg, dict) else None, -32603, "internal error")
         if reply is not None:
             stdout.write(json.dumps(reply) + "\n")
             stdout.flush()

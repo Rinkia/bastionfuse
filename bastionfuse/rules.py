@@ -63,8 +63,16 @@ def fold(text: str) -> str:
 
 
 def _strip_cf(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text)
-    return "".join(c for c in text if unicodedata.category(c) != "Cf")
+    if text.isascii():  # NFKC is the identity on ASCII, and ASCII has no format characters
+        return text
+    return unicodedata.normalize("NFKC", text).translate(_cf_table())
+
+
+@lru_cache(maxsize=1)
+def _cf_table() -> dict[int, None]:
+    """Every format (Cf) code point -> deleted. str.translate runs in C (a per-char loop was
+    the slowest part of a 1 MB scan). Built lazily: it costs ~0.2 s, and ASCII never needs it."""
+    return {cp: None for cp in range(0x110000) if unicodedata.category(chr(cp)) == "Cf"}
 
 
 # separators an attacker sprinkles inside a token: whitespace, quotes, shell
@@ -520,11 +528,14 @@ def hosts_of(text: str) -> set[str]:
 
 # --- self-protection ---------------------------------------------------------
 
-_FUSE_VERBS = re.compile(r"(?:^|[\s;&|(])bastionfuse(?:\.exe)?(?=\s)[^\n;&|]*?\b(?:reset|plant|untrip)\b"
+# Every repetition is bounded: `re` holds the GIL, so an unbounded quadratic match on a
+# large input would also stall the hook watchdog (round-3 review).
+_FUSE_VERBS = re.compile(r"(?:^|[\s;&|(])bastionfuse(?:\.exe)?(?=\s)[^\n;&|]{0,128}?\b(?:reset|plant|untrip)\b"
                          r"|bastionfuse\.cli", re.IGNORECASE)
-_PKG_TOOLS = re.compile(r"\b(?:pip3?|pipx|uv|conda|mamba|poetry|pdm|rye|hatch)\b[^\n;&|]*\bbastionfuse\b",
+_PKG_TOOLS = re.compile(r"\b(?:pip3?|pipx|uv|conda|mamba|poetry|pdm|rye|hatch)\b[^\n;&|]{0,128}?\bbastionfuse\b",
                         re.IGNORECASE)
-_SETTINGS = re.compile(r"\.claude[\\/]+(?:[^\s\\/\"']*[\\/]+)*settings(?:\.local)?\.json", re.IGNORECASE)
+_SETTINGS = re.compile(r"\.claude[\\/]{1,4}(?:[^\s\\/\"']{1,64}[\\/]{1,4}){0,8}settings(?:\.local)?\.json",
+                       re.IGNORECASE)
 _SETTINGS_TAIL = re.compile(r"/\.claude/settings(?:\.local)?\.json$")
 
 

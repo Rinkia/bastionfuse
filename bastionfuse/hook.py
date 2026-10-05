@@ -165,19 +165,20 @@ def settings_snippet(command: str = "bastionfuse", home: str | None = None) -> d
 def main_hook(event: str, policy_path: str | None = None, *, home_pinned: bool = False) -> int:
     """Read hook JSON as UTF-8 bytes: the Windows console codepage would mangle it
     (and with it every Unicode-folding defense)."""
-    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    timer = start_watchdog(WATCHDOG_S, sys.stderr) if event == "pre" else None  # before any work
     try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
-    except (AttributeError, ValueError):
-        pass
-    stdin = io.StringIO(raw)
-    if event == "pre":
-        timer = start_watchdog(WATCHDOG_S, sys.stderr)
+        raw = sys.stdin.buffer.read().decode("utf-8", "replace")
         try:
+            sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
+        stdin = io.StringIO(raw)
+        if event == "pre":
             return pre(stdin, sys.stderr, policy_path, use_env=not home_pinned)
-        finally:
+        return post(stdin, sys.stderr, policy_path, use_env=not home_pinned)
+    finally:
+        if timer is not None:
             timer.cancel()
-    return post(stdin, sys.stderr, policy_path, use_env=not home_pinned)
 
 
 def start_watchdog(seconds: float, stderr: TextIO, exit_fn=os._exit) -> threading.Timer:

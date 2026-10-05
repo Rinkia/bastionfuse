@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bastionfuse"
+version = "0.1.0"
+description = "Kill switch and tripwires for AI agents: honeytokens, decoy files, decoy MCP tools and action budgets trip a sticky fuse that stops the agent, whether or not any detector saw the injection. Claude Code hook + Python library. The CONTAIN leg of the bastion family."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Stefano Rizzello", email = "rizzellostefano@gmail.com" }]
+keywords = ["ai-agent", "security", "kill-switch", "circuit-breaker", "honeytoken", "canary", "claude-code", "mcp", "prompt-injection", "agent-security"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
+# bastiontrace: snapshot contract test; mcp: decoy server interop test
+dev = ["pytest>=7.0", "pytest-cov>=5.0", "pyyaml>=6.0", "bastiontrace>=0.5.0"]
+
+[project.scripts]
+bastionfuse = "bastionfuse.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Rinkia/bastionfuse"
+Repository = "https://github.com/Rinkia/bastionfuse"
+Issues = "https://github.com/Rinkia/bastionfuse/issues"
+
+[tool.setuptools]
+packages = ["bastionfuse"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

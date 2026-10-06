@@ -69,3 +69,17 @@ def test_action_text_ignores_content_keys():
     from bastionfuse.rules import action_text
     assert self_protect_hit(action_text({"file_path": "notes.md", "content": DOC}), policy) is None
     assert self_protect_hit(action_text({"command": "cat ~/.claude/settings.json"}), policy)
+
+
+# finding 6 (first false TRIP): file content naming the decoy path tainted the session
+def test_6_content_naming_decoy_does_not_taint(tmp_path):
+    decoy = str(tmp_path / "app" / ".env.backup")
+    f = Fuse(policy_from_dict(pol(decoy_paths=[decoy])), store=Store(None))
+    note = {"file_path": str(tmp_path / "notes.md"), "content": f"decoy planted at {decoy}"}
+    assert f.check("Write", note).allowed
+    assert f.status()["taint"] is None
+    assert f.check("Bash", {"command": "git pull"}).allowed  # no false trip afterwards
+    # touching the decoy itself still taints, then egress trips
+    f.check("Read", {"file_path": decoy})
+    assert f.status()["taint"].startswith("decoy path")
+    assert f.check("Bash", {"command": "git pull"}).rule == "taint-egress"

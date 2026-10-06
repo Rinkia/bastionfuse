@@ -181,6 +181,16 @@ _SECRET_SHAPES = re.compile(
 
 _PATH_KEYS = frozenset({"file_path", "path", "paths", "notebook_path", "command", "cwd", "directory", "dir",
                         "source", "destination", "target", "filename", "files", "url", "uri"})
+_ACTION_KEYS = _PATH_KEYS | {"cmd", "script", "args", "argv", "arguments"}
+
+
+def action_text(tool_input: Any) -> str:
+    """The parts of a call that say what it does (commands, paths, URLs), without file
+    content. Self-protect's text rules read only this: a Write whose body merely
+    mentions the settings path or the package name is not an attack on the fuse."""
+    if isinstance(tool_input, dict):
+        return flatten({k: v for k, v in tool_input.items() if str(k).casefold() in _ACTION_KEYS})
+    return flatten(tool_input)
 _TOKEN_SPLIT = re.compile(r"[\s|;&<>()=,`]+")
 _GIT_BASH = re.compile(r"^/(?:mnt/)?([a-zA-Z])(/.*)?$")
 
@@ -533,8 +543,10 @@ def hosts_of(text: str) -> set[str]:
 # large input would also stall the hook watchdog (round-3 review).
 _FUSE_VERBS = re.compile(r"(?:^|[\s;&|(])bastionfuse(?:\.exe)?(?=\s)[^\n;&|]{0,128}?\b(?:reset|plant|untrip)\b"
                          r"|bastionfuse\.cli", re.IGNORECASE)
-_PKG_TOOLS = re.compile(r"\b(?:pip3?|pipx|uv|conda|mamba|poetry|pdm|rye|hatch)\b[^\n;&|]{0,128}?\bbastionfuse\b",
-                        re.IGNORECASE)
+# a package manager, then (within a few words) a verb that changes an install, then the name
+_PKG_TOOLS = re.compile(r"(?:^|[\s;&|(])(?:pip3?|pipx|uv|conda|mamba|poetry|pdm|rye|hatch)(?:\s+[\w.-]{1,32}){0,3}?"
+                        r"\s+(?:uninstall|remove|rm|install|reinstall|add|upgrade|update|sync)\b"
+                        r"[^\n;&|]{0,128}?\bbastionfuse\b", re.IGNORECASE)
 _SETTINGS = re.compile(r"\.claude[\\/]{1,4}(?:[^\s\\/\"']{1,64}[\\/]{1,4}){0,8}settings(?:\.local)?\.json",
                        re.IGNORECASE)
 _SETTINGS_TAIL = re.compile(r"/\.claude/settings(?:\.local)?\.json$")
@@ -544,11 +556,18 @@ _SETTINGS_TAIL = re.compile(r"/\.claude/settings(?:\.local)?\.json$")
 def _install_paths() -> tuple[str, ...]:
     """The installed package and its console script: deleting or editing either
     disables the hook (a missing command exits 127, which the host treats as allow)."""
-    paths = [str(Path(__file__).resolve().parent)]
+    script = _script_path()
+    return (_package_dir(),) + ((script,) if script else ())
+
+
+def _package_dir() -> str:
+    return str(Path(__file__).resolve().parent)
+
+
+@lru_cache(maxsize=1)
+def _script_path() -> str | None:
     script = shutil.which("bastionfuse")
-    if script:
-        paths.append(str(Path(script).resolve()))
-    return tuple(paths)
+    return str(Path(script).resolve()) if script else None
 
 
 @lru_cache(maxsize=1)
@@ -575,10 +594,14 @@ _STARTUP_NAMES = frozenset({"sitecustomize.py", "usercustomize.py"})
 
 
 def self_protect_hit(text: str, policy: FusePolicy, candidates: set[str] = frozenset(), *,
-                     read_only: bool = False) -> str | None:
+                     read_only: bool = False, shell: bool = False) -> str | None:
     """Why this call touches the fuse itself, or None. Raises the bar only: a
     same-user agent with a shell can always find a spelling this misses.
-    `read_only` calls may read the package source; nothing may change it."""
+
+    `text` should be action_text() of the call (commands and paths, not file content).
+    `read_only` calls may read the package source; nothing may change it. In a `shell`
+    command the console script is usually being run, not changed, so only file-writing
+    tools are refused for it (deleting it from a shell is a documented limit)."""
     if not policy.self_protect:
         return None
     unquoted = text.replace('"', "").replace("'", "").replace("\\\\", "\\")
@@ -600,7 +623,8 @@ def self_protect_hit(text: str, policy: FusePolicy, candidates: set[str] = froze
         return None
     if any(_is_startup_file(c) for c in candidates):
         return "writes a Python startup file (it would run inside the fuse hook)"
-    if PathMatcher(_install_paths()).find("", candidates, prefix=True):
+    protected_install = (_package_dir(),) if shell or not _script_path() else _install_paths()
+    if PathMatcher(protected_install).find("", candidates, prefix=True):
         return "touches the installed bastionfuse package"
     return None
 

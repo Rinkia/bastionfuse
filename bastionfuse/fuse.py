@@ -34,8 +34,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .policy import FusePolicy
-from .rules import (OPAQUE, Oversize, PathMatcher, TokenMatcher, classify, flatten, hosts_of, path_candidates,
-                    self_protect_hit)
+from .rules import (OPAQUE, Oversize, PathMatcher, TokenMatcher, action_text, classify, flatten, hosts_of,
+                    path_candidates, self_protect_hit)
 from .state import GLOBAL, Store, StoreBusy, StoreCorrupt, Tx
 
 RING_ARGS_CAP = 4096  # bytes of args kept per call in the forensic ring
@@ -195,7 +195,8 @@ class Fuse:
             text=text,
             token=self.tokens.find(text),
             decoy=self.decoys.find(text, candidates),
-            protect=self_protect_hit(text, self.policy, candidates, read_only="read_only" in labels),
+            protect=self_protect_hit(action_text(tool_input), self.policy, candidates,
+                                     read_only="read_only" in labels, shell=tool in self.policy.shell_tools),
             labels=labels,
             hosts=frozenset(hosts_of(text)) if "egress" in labels else frozenset(),
             size=len(text.encode("utf-8")),

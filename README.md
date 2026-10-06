@@ -166,6 +166,8 @@ that fit your work, and only then enforce the repeat detector.
   Honeytokens in tool *results* and the other tripwires still apply, but a command that sends a
   decoy file without the agent ever reading it may go unseen.
 
+- **Self-protect reads commands and paths, not file content.** Writing a file that *talks
+  about* the fuse is fine; a script written that way and then run is a shell-side limit (below).
 - **Tamper-evident, not tamper-proof, against a same-user agent.** The agent's shell runs as you.
   Self-protect blocks the obvious ways to delete the fuse's state, edit `.claude/settings.json`
   (where the hook lives, and Claude Code reloads hooks when it changes) or run

@@ -31,4 +31,8 @@ agent does, not by what its text says.
   `usercustomize.py`, `.pth` in site-packages) and any change to the installed package;
   read-only tools may still read the package source. `operator_paths` was removed (it let an
   editable install's package be edited).
+- **Self-protect reads actions, not content:** its text rules look only at commands and
+  path fields, so a file whose body mentions the fuse or its settings isn't blocked. The
+  package-manager rule needs an install/remove verb; running the console script is allowed.
+  (Dogfood round 1: 4 false blocks, 0 false trips.)
 - **Assume-breach demo** (`bastionfuse demo`): a scripted attacker vs the fuse, no API key.

@@ -34,8 +34,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .policy import FusePolicy
-from .rules import (OPAQUE, Oversize, PathMatcher, TokenMatcher, classify, flatten, hosts_of, path_candidates,
-                    self_protect_hit)
+from .rules import (OPAQUE, Oversize, PathMatcher, TokenMatcher, action_text, classify, flatten, hosts_of,
+                    path_candidates, self_protect_hit)
 from .state import GLOBAL, Store, StoreBusy, StoreCorrupt, Tx
 
 RING_ARGS_CAP = 4096  # bytes of args kept per call in the forensic ring
@@ -189,13 +189,16 @@ class Fuse:
 
     def _facts(self, tool: str, tool_input: Any, cwd: str | None) -> _Facts:
         text = flatten(tool_input)
+        action = action_text(tool_input)  # commands and paths, not file content
         candidates = path_candidates(tool_input, cwd)
         labels = frozenset(classify(tool, tool_input, self.policy))
         return _Facts(
             text=text,
-            token=self.tokens.find(text),
-            decoy=self.decoys.find(text, candidates),
-            protect=self_protect_hit(text, self.policy, candidates),
+            token=self.tokens.find(text),  # a honeytoken anywhere counts, content included
+            # a doc that merely names a decoy path isn't touching it (dogfood finding 6)
+            decoy=self.decoys.find(action, candidates),
+            protect=self_protect_hit(action, self.policy, candidates,
+                                     read_only="read_only" in labels, shell=tool in self.policy.shell_tools),
             labels=labels,
             hosts=frozenset(hosts_of(text)) if "egress" in labels else frozenset(),
             size=len(text.encode("utf-8")),

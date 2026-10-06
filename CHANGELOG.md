@@ -27,4 +27,13 @@ agent does, not by what its text says.
   globbing is lazy and bounded by hits and time.
   Self-protect regexes are bounded (they hold the GIL, so a quadratic match would also stall
   the watchdog), and the hook keeps exit code 2 even when stderr is closed.
+- **Self-protect** also blocks writes to Python startup files (`sitecustomize.py`,
+  `usercustomize.py`, `.pth` in site-packages) and any change to the installed package;
+  read-only tools may still read the package source. `operator_paths` was removed (it let an
+  editable install's package be edited).
+- **Self-protect reads actions, not content:** its text rules look only at commands and
+  path fields, so a file whose body mentions the fuse or its settings isn't blocked. The
+  package-manager rule needs an install/remove verb; running the console script is allowed.
+  The decoy check reads the same way: a file whose body names a decoy path doesn't taint the
+  session. (Dogfood: 5 false blocks and 1 false trip, all from file content; fixed.)
 - **Assume-breach demo** (`bastionfuse demo`): a scripted attacker vs the fuse, no API key.

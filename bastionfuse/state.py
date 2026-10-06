@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -22,6 +23,7 @@ from typing import Iterator
 from .policy import MAX_WINDOW_S
 
 BUSY_TIMEOUT_S = 2.0
+SCHEMA_RETRY_S = 6.0  # stays under the hook watchdog (10 s)
 MAX_EVENTS_PER_SESSION = 50_000
 RING_SIZE = 256
 RING_TTL_S = 30 * 86400
@@ -57,11 +59,41 @@ class Store:
             self._mem = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
         else:  # exist_ok: hook processes start together and race to create it
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with self.tx() as t:
-            for stmt in _SCHEMA:
-                t.db.execute(stmt)
+        if not self._has_schema():
+            self._create_schema()
         if self.path is not None and os.name != "nt":
             os.chmod(self.path, 0o600)
+
+    def _has_schema(self) -> bool:
+        """A read needs no write lock: hook processes starting together don't contend
+        once the database exists."""
+        if self._mem is not None:
+            return False
+        try:
+            db = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_S)
+            try:
+                tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            finally:
+                db.close()
+        except sqlite3.OperationalError:
+            return False
+        except sqlite3.DatabaseError as e:
+            raise StoreCorrupt(f"{self.path}: {e}") from e
+        return {"flags", "taint", "events", "ring"} <= tables
+
+    def _create_schema(self) -> None:
+        """First use only. Retried briefly: several processes may race to create it."""
+        deadline = time.monotonic() + SCHEMA_RETRY_S
+        while True:
+            try:
+                with self.tx() as t:
+                    for stmt in _SCHEMA:
+                        t.db.execute(stmt)
+                return
+            except StoreBusy:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
 
     def close(self) -> None:
         if self._mem is not None:

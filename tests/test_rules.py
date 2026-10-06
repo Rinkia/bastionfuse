@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bastionfuse.policy import policy_from_dict
+from bastionfuse.policy import PolicyError, policy_from_dict
 from bastionfuse.rules import (MAX_INPUT_BYTES, Oversize, PathMatcher, TokenMatcher, classify, command_labels,
                                flatten, hosts_of, new_token, self_protect_hit)
 from conftest import TOKEN, pol
@@ -114,17 +114,45 @@ def test_self_protect(tmp_path, fuse_home):
     assert self_protect_hit("bastionfuse reset", off) is None
 
 
-def test_operator_paths_exempt_package_source_only(tmp_path):
+def test_package_source_readable_never_writable():
     from bastionfuse.rules import _install_paths, path_candidates
-    pkg = _install_paths()[0]
-    target = {"file_path": str(Path(pkg) / "hook.py")}
-    plain = policy_from_dict(pol())
-    assert "installed bastionfuse package" in self_protect_hit("x", plain, path_candidates(target, None))
-    exempt = policy_from_dict(pol(operator_paths=[pkg]))
-    assert self_protect_hit("x", exempt, path_candidates(target, None)) is None
-    # operator_paths never exempts the state dir, settings or operator verbs
-    assert self_protect_hit("bastionfuse reset", exempt)
-    assert self_protect_hit("rm -r ~/.bastionfuse", exempt)
+    target = path_candidates({"file_path": str(Path(_install_paths()[0]) / "hook.py")}, None)
+    policy = policy_from_dict(pol())
+    assert "installed bastionfuse package" in self_protect_hit("x", policy, target)
+    assert self_protect_hit("x", policy, target, read_only=True) is None
+    # reading never unlocks the state dir, settings or operator verbs
+    assert self_protect_hit("rm -r ~/.bastionfuse", policy, read_only=True)
+    assert self_protect_hit("cat .claude/settings.json", policy, read_only=True)
+
+
+def test_operator_paths_removed():
+    with pytest.raises(PolicyError, match="unknown key"):
+        policy_from_dict(pol(operator_paths=["/x"]))
+
+
+def test_python_startup_files_protected(tmp_path):
+    from bastionfuse.rules import _site_dirs, path_candidates
+    policy = policy_from_dict(pol())
+    site_dir = _site_dirs()[0]
+    for name in ("sitecustomize.py", "usercustomize.py", "zz-hook.pth"):
+        cands = path_candidates({"file_path": f"{site_dir}/{name}"}, None)
+        assert "startup file" in self_protect_hit("x", policy, cands), name
+    # a sitecustomize.py anywhere is suspicious (PYTHONPATH shadowing); a .pth outside site dirs is not
+    assert self_protect_hit("x", policy, path_candidates({"file_path": str(tmp_path / "sitecustomize.py")}, None))
+    assert self_protect_hit("x", policy, path_candidates({"file_path": str(tmp_path / "notes.pth")}, None)) is None
+    assert self_protect_hit("x", policy, path_candidates({"file_path": f"{site_dir}/x.pth"}, None),
+                            read_only=True) is None
+
+
+def test_fuse_lets_read_tool_view_package_but_not_edit():
+    from bastionfuse import Fuse
+    from bastionfuse.rules import _install_paths
+    from bastionfuse.state import Store
+    f = Fuse(policy_from_dict(pol()), store=Store(None))
+    src = str(Path(_install_paths()[0]) / "rules.py")
+    assert f.check("Read", {"file_path": src}).allowed
+    d = f.check("Edit", {"file_path": src, "old_string": "a", "new_string": "b"})
+    assert not d.allowed and d.rule == "self-protect"
 
 
 @pytest.mark.parametrize("kind, prefix", [("aws", "AKIA"), ("github", "ghp_"), ("openai", "sk-proj-"),

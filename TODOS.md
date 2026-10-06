@@ -8,18 +8,10 @@
 
 **Why:** round-2 review (remaining 5). Some argument forms that name a decoy file aren't resolved to its path.
 
+**Tracked:** https://github.com/Rinkia/bastionfuse/issues/3 (help wanted)
+
 **Effort:** S
 **Priority:** P1
-**Depends on:** none.
-
-### Self-protect residuals (MEDIUM)
-
-**What:** cover Python startup files (`sitecustomize.py`, `.pth`) in site-packages, and stop `operator_paths` exempting an editable install's package from protection.
-
-**Why:** round-2 review (remaining 6). Same-user tampering class, documented in README Limits.
-
-**Effort:** S
-**Priority:** P2
 **Depends on:** none.
 
 ### Shared policy block

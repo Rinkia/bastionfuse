@@ -43,6 +43,21 @@ bastionfuse install-hook                      # prints the settings.json block
 claude mcp add bastionfuse-decoy -- bastionfuse decoy-mcp   # optional: decoy tools
 ```
 
+> **Windows + Claude Desktop:** install bastionfuse from your own terminal (PowerShell,
+> Windows Terminal), not from inside a Claude session. Claude Desktop is a packaged app, and
+> files that processes inside it write under `AppData` go to a private, redirected copy that
+> your own terminals can't see. If you install from inside Claude (or with `uv tool install`,
+> which uses `AppData` by default), the hook works but `bastionfuse reset` in PowerShell fails
+> with "uv trampoline failed to canonicalize script path". To install with uv from anywhere, use
+> a folder outside `AppData`:
+>
+> ```powershell
+> $env:UV_TOOL_DIR = "$env:USERPROFILE\.local\uv-tools"
+> uv tool install bastionfuse
+> ```
+>
+> Then run `bastionfuse install-hook`, so the printed hook command uses that path.
+
 Paste the printed block into `~/.claude/settings.json` (better: a
 [managed settings](https://code.claude.com/docs/en/settings) file the agent can't edit):
 

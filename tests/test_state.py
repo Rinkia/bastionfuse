@@ -1,4 +1,5 @@
 import sqlite3
+import time
 import subprocess
 import sys
 import textwrap
@@ -90,3 +91,23 @@ def test_ring_and_events_bounded(monkeypatch):
         t.prune("s", float(10**6 + 300))
         assert len(t.ring("s")) == state.RING_SIZE
         assert t.count("s", "call", None, 0.0) == 10
+
+
+def test_schema_creation_retries_then_reports_busy(tmp_path, monkeypatch):
+    import bastionfuse.state as state
+
+    monkeypatch.setattr(state, "BUSY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(state, "SCHEMA_RETRY_S", 0.3)
+    db = tmp_path / "state.sqlite"
+    holder = sqlite3.connect(db, isolation_level=None)
+    holder.execute("BEGIN EXCLUSIVE")  # fresh file, no schema, writer holds the lock
+    try:
+        start = time.perf_counter()
+        with pytest.raises(StoreBusy):
+            Store(db)
+        assert time.perf_counter() - start >= 0.25  # it retried before giving up
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    Store(db)  # lock released: creation succeeds
+    assert Store(db)._has_schema()

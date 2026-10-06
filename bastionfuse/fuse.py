@@ -195,7 +195,7 @@ class Fuse:
             text=text,
             token=self.tokens.find(text),
             decoy=self.decoys.find(text, candidates),
-            protect=self_protect_hit(text, self.policy, candidates),
+            protect=self_protect_hit(text, self.policy, candidates, read_only="read_only" in labels),
             labels=labels,
             hosts=frozenset(hosts_of(text)) if "egress" in labels else frozenset(),
             size=len(text.encode("utf-8")),

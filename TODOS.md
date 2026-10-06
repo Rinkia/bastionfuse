@@ -12,16 +12,6 @@
 **Priority:** P1
 **Depends on:** none.
 
-### Self-protect residuals (MEDIUM)
-
-**What:** cover Python startup files (`sitecustomize.py`, `.pth`) in site-packages, and stop `operator_paths` exempting an editable install's package from protection.
-
-**Why:** round-2 review (remaining 6). Same-user tampering class, documented in README Limits.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** none.
-
 ### Shared policy block
 
 **What:** move the `fuse:` block into the suite's shared policy.yaml. Add `fuse` to gate's `_V2_BLOCKS`, agentbastion's `_TOOL_BLOCKS`, and a bastionsupply doctor floor.

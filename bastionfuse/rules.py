@@ -16,6 +16,7 @@ import re
 import secrets
 import shlex
 import shutil
+import site
 import string
 import time
 import unicodedata
@@ -550,9 +551,34 @@ def _install_paths() -> tuple[str, ...]:
     return tuple(paths)
 
 
-def self_protect_hit(text: str, policy: FusePolicy, candidates: set[str] = frozenset()) -> str | None:
+@lru_cache(maxsize=1)
+def _site_dirs() -> tuple[str, ...]:
+    """Directories whose startup files (sitecustomize.py, usercustomize.py, *.pth) run
+    inside every Python process, the hook's included."""
+    dirs = list(site.getsitepackages()) if hasattr(site, "getsitepackages") else []
+    try:
+        dirs.append(site.getusersitepackages())
+    except (AttributeError, OSError):
+        pass
+    return tuple(_norm(d) for d in dirs if d)
+
+
+def _is_startup_file(candidate: str) -> bool:
+    name = candidate.rsplit("/", 1)[-1]
+    if name not in _STARTUP_NAMES and not name.endswith(".pth"):
+        return False
+    parent = candidate.rsplit("/", 1)[0]
+    return parent in _site_dirs() or name in _STARTUP_NAMES
+
+
+_STARTUP_NAMES = frozenset({"sitecustomize.py", "usercustomize.py"})
+
+
+def self_protect_hit(text: str, policy: FusePolicy, candidates: set[str] = frozenset(), *,
+                     read_only: bool = False) -> str | None:
     """Why this call touches the fuse itself, or None. Raises the bar only: a
-    same-user agent with a shell can always find a spelling this misses."""
+    same-user agent with a shell can always find a spelling this misses.
+    `read_only` calls may read the package source; nothing may change it."""
     if not policy.self_protect:
         return None
     unquoted = text.replace('"', "").replace("'", "").replace("\\\\", "\\")
@@ -570,10 +596,11 @@ def self_protect_hit(text: str, policy: FusePolicy, candidates: set[str] = froze
     if (PathMatcher(tuple(protected)).find(unquoted, candidates, prefix=True)
             or ".bastionfuse" in fold(unquoted)):
         return "touches the fuse state or policy"
-    exempt = {_norm(os.path.expanduser(str(p))) for p in policy.operator_paths}
-    pkg = PathMatcher(_install_paths())
-    if pkg.find("", {c for c in candidates if not any(c == e or c.startswith(e.rstrip("/") + "/")
-                                                      for e in exempt)}, prefix=True):
+    if read_only:
+        return None
+    if any(_is_startup_file(c) for c in candidates):
+        return "writes a Python startup file (it would run inside the fuse hook)"
+    if PathMatcher(_install_paths()).find("", candidates, prefix=True):
         return "touches the installed bastionfuse package"
     return None
 

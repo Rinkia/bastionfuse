@@ -43,7 +43,7 @@ _V2_BLOCKS = frozenset({"gate", "bastion", "supply", "skill", "fuse"})
 _FUSE_KEYS = frozenset({
     "mode", "honeytokens", "honeytokens_env", "decoy_paths", "canary_tools", "labels",
     "shell_tools", "commands", "budgets", "repeat", "kill_file", "kill_env", "heartbeat",
-    "self_protect", "operator_paths", "state_dir", "snapshot",
+    "self_protect", "state_dir", "snapshot",
 })
 
 # Claude Code built-in tools. Shell tools are classified by their command text.
@@ -119,7 +119,6 @@ class FusePolicy:
     kill_env: str = "BASTIONFUSE_KILL"
     heartbeat: Heartbeat | None = None
     self_protect: bool = True
-    operator_paths: tuple[Path, ...] = ()
     state_dir: Path = Path("~/.bastionfuse").expanduser()
     snapshot: bool = True
     source: Path | None = None  # the policy file, protected by self-protect
@@ -252,8 +251,6 @@ def _build(b: dict, source: Path | None) -> FusePolicy:
         kill_env=_str(b.get("kill_env", "BASTIONFUSE_KILL"), "kill_env"),
         heartbeat=_heartbeat(hb) if hb is not None else None,
         self_protect=_bool(b.get("self_protect", True), "self_protect"),
-        operator_paths=tuple(_path(p, "operator_paths") for p in _str_list(b.get("operator_paths", []),
-                                                                            "operator_paths")),
         state_dir=state_dir,
         snapshot=_bool(b.get("snapshot", True), "snapshot"),
         source=source,

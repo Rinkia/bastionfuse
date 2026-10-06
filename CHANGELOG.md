@@ -27,4 +27,8 @@ agent does, not by what its text says.
   globbing is lazy and bounded by hits and time.
   Self-protect regexes are bounded (they hold the GIL, so a quadratic match would also stall
   the watchdog), and the hook keeps exit code 2 even when stderr is closed.
+- **Self-protect** also blocks writes to Python startup files (`sitecustomize.py`,
+  `usercustomize.py`, `.pth` in site-packages) and any change to the installed package;
+  read-only tools may still read the package source. `operator_paths` was removed (it let an
+  editable install's package be edited).
 - **Assume-breach demo** (`bastionfuse demo`): a scripted attacker vs the fuse, no API key.

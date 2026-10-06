@@ -101,7 +101,7 @@ The first hit wins: cheap and certain checks first.
 | 3 | **Canary tool** called (`canary_tools`, or any `mcp__bastionfuse-decoy__*`) | trip |
 | 4 | **Honeytoken** in the call's input: raw, reversed, rot13, hex, base32, base64 (any alignment, UTF-8 and UTF-16LE), also with separators, quotes and %-escapes removed; case/NFKC/zero-width folded | trip |
 | 5 | **Decoy path** in the input (`Read` of `.env.backup`, `cat` of a fake `~/.aws/credentials`) | taint the session |
-| 6 | **Self-protect**: the call touches the fuse's state, its policy, `.claude/settings*.json` or runs `bastionfuse reset` | deny, no trip |
+| 6 | **Self-protect**: the call touches the fuse's state, its policy, `.claude/settings*.json`, Python startup files (`sitecustomize.py`, `.pth`), changes the installed package, or runs `bastionfuse reset` (read-only tools may still read the package source) | deny, no trip |
 | 7 | Classify: `egress` / `fetch` / `destructive` / `read_only` (tool labels + shell command words) | |
 | 8 | **Tainted session + any call that can send data** (egress, fetch, inline/computed code, MCP tools not marked read-only) | trip |
 | 9 | **Budgets** in sliding windows: calls, per label, per tool, distinct egress hosts, bytes out | trip (operator-written) / log (defaults) |
@@ -144,7 +144,6 @@ fuse:
   commands:                      # shell command words per label (replaces that label's defaults)
     egress: [curl, wget, nc, scp, ssh, git push, npm publish]
   heartbeat: {file: /run/agent/heartbeat, stale_s: 120}   # only if a supervisor touches it
-  operator_paths: [~/src/bastionfuse]   # an editable install here isn't treated as protected package source
   state_dir: ~/.bastionfuse
 ```
 

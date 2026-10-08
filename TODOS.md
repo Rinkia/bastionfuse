@@ -38,11 +38,16 @@
 **Priority:** P2
 **Depends on:** 0.1 on PyPI, shared policy block.
 
-### bastiontrace fuse landing
+### bastiontrace fuse landing — DONE 2026-10-08
 
 **What:** a landing kind for fuse trips (honeytoken in tool_call args, canary tool, taint-egress), so `bastiontrace analyze` scores snapshots.
 
 **Why:** today a snapshot loads but scores "no landing" (D8).
+
+**Done:** bastiontrace 0.6.0, branch `feat/fuse-landing`. Landing kind `fuse` plus
+`Finding.contained`; the `fuse` header block and `tool_call.verdict` that bastionfuse 0.1.0
+already writes are now read. No bastionfuse change was needed. Design:
+`../trace-fuse-landing-DESIGN.md`.
 
 **Effort:** S
 **Priority:** P3

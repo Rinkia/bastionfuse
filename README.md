@@ -183,6 +183,13 @@ that fit your work, and only then enforce the repeat detector.
 
 - **Self-protect reads commands and paths, not file content.** Writing a file that *talks
   about* the fuse is fine; a script written that way and then run is a shell-side limit (below).
+- **A shell command is scanned whole, inline script bodies included.** A heredoc or `-c` script
+  that merely *mentions* your settings file or the fuse state is denied, because a command that
+  writes there is a real action and the fuse can't tell the two apart. This is deliberate: edit
+  such files with your editor or the agent's file-writing tools, not from inside a shell script.
+- **Self-protect doesn't distinguish reading from writing.** `grep`/`Select-String` over your
+  settings file, and read-only `bastionfuse log` / `status`, are denied along with the mutating
+  commands. Run the operator CLI from your own terminal.
 - **Tamper-evident, not tamper-proof, against a same-user agent.** The agent's shell runs as you.
   Self-protect blocks the obvious ways to delete the fuse's state, edit `.claude/settings.json`
   (where the hook lives, and Claude Code reloads hooks when it changes) or run

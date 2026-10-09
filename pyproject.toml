@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bastionfuse"
-version = "0.1.0"
+version = "0.1.1"
 description = "Kill switch and tripwires for AI agents: honeytokens, decoy files, decoy MCP tools and action budgets trip a sticky fuse that stops the agent, whether or not any detector saw the injection. Claude Code hook + Python library. The CONTAIN leg of the bastion family."
 readme = "README.md"
 requires-python = ">=3.10"

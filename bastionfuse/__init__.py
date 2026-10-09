@@ -14,7 +14,7 @@ the agent is stopped until an operator resets it.
 from .fuse import Decision, Fuse, FuseBlocked
 from .policy import FusePolicy, PolicyError, load_policy, policy_from_dict
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = ["Decision", "Fuse", "FuseBlocked", "FusePolicy", "PolicyError", "load_policy",
            "policy_from_dict", "__version__"]

@@ -53,6 +53,7 @@ class Decision:
     rule: str = ""
     tripped: bool = False  # the fuse is tripped (by this call or earlier)
     shadow: tuple[str, ...] = field(default_factory=tuple)  # would-trip notes from shadow rules
+    fresh: bool = False  # this call is what tripped the fuse (not a refusal after it)
 
 
 class FuseBlocked(Exception):
@@ -231,7 +232,7 @@ class Fuse:
         _release(claims)
         if v is not None:
             d = Decision(v.allowed and not v.trip, self._deny_text(v.reason, v.rule) if v.trip else v.reason,
-                         v.rule, v.trip, tuple(v.shadow))
+                         v.rule, v.trip, tuple(v.shadow), fresh=v.trip)
         verdict = "tripped" if v is not None and v.trip else ("allowed" if d.allowed else "blocked")
         ring = self._forensics(s, tool, facts.text, verdict, now, want_ring=v is not None and v.trip)
         if v is not None and v.trip:

@@ -135,7 +135,7 @@ def _log(policy: FusePolicy, session: str, tool: str, decision: Decision | None,
     record: dict[str, Any] = {"ts": round(time.time(), 3), "session": session[:64], "tool": tool[:128]}
     if decision is not None:
         record.update(allowed=decision.allowed, rule=decision.rule, tripped=decision.tripped,
-                      reason=decision.reason[:500], shadow=list(decision.shadow))
+                      fresh=decision.fresh, reason=decision.reason[:500], shadow=list(decision.shadow))
     if taint:
         record["taint"] = taint[:300]
     path = policy.state_dir / "log.jsonl"

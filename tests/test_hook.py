@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from bastionfuse import hook
+from bastionfuse import cli, hook
 from conftest import TOKEN
 
 
@@ -110,6 +110,17 @@ def test_log_records_trips_and_shadow(policy_file, fuse_home):
     assert lines[0]["rule"] == "canary" and lines[0]["tripped"]
     assert "taint" in lines[1]
     assert TOKEN not in (fuse_home / "log.jsonl").read_text()
+
+
+def test_summary_counts_one_trip_not_the_refusals_after_it(policy_file, fuse_home, capsys):
+    """One trip plus three post-trip refusals is one trip, not four (issue #6)."""
+    run_pre(payload(tool="export_all_secrets", tool_input={}), policy_file)
+    for _ in range(3):
+        run_pre(payload(tool="Read", tool_input={"file_path": "a"}), policy_file)
+    assert cli.main(["--policy", policy_file, "log", "--summary"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["trips_by_rule"] == {"canary": 1}
+    assert summary["refused_after_trip"] == {"canary": 3}
 
 
 def test_log_rotates(policy_file, fuse_home, monkeypatch):

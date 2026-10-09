@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **`log --summary` no longer counts post-trip refusals as trips** (#6). Once the fuse is
+  tripped, every refused call was logged as `tripped: true` and tallied under the rule that
+  fired, so one trip plus N refusals read as N+1 trips — inflating the dogfood bar the
+  heuristic detectors are promoted against. `Decision` now carries `fresh` ("this call tripped
+  the fuse"); `trips_by_rule` counts only those, and the refusals after a trip are tallied
+  separately under `refused_after_trip`, which measures how long the agent kept trying after
+  containment. Log records written before this change have no `fresh` key and still tally the
+  old way.
+
 ## 0.1.0 (2026-10-06)
 
 First release. The CONTAIN leg of the bastion suite: a sticky kill switch driven by what the

@@ -83,7 +83,7 @@ bastionfuse status --session <id>   # trip state, taint, signals
 bastionfuse kill                    # stop EVERY guarded session at its next tool call
 bastionfuse reset --global          # lift the kill (removes the KILL file too)
 bastionfuse reset --session <id>    # reset one session after reviewing the trip
-bastionfuse log --summary           # trips, blocks and shadow notes (your dogfood tally)
+bastionfuse log --summary           # trips, post-trip refusals, shadow notes (dogfood tally)
 ```
 
 ## Quickstart: Python library

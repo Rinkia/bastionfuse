@@ -155,11 +155,17 @@ def _log(args, policy) -> int:
         for r in records[-args.tail:]:
             print(json.dumps(r))
         return 0
-    trips = collections.Counter(str(r.get("rule")) for r in records if r.get("tripped") and not r.get("allowed"))
+    # `tripped` is true for the call that tripped and for every call refused afterwards;
+    # only `fresh` means "this call tripped the fuse". Records written before `fresh`
+    # existed fall back to `tripped`, so an old log still tallies the way it used to.
+    refused = [r for r in records if r.get("tripped") and not r.get("allowed")]
+    trips = collections.Counter(str(r.get("rule")) for r in refused if r.get("fresh", r.get("tripped")))
+    after = collections.Counter(str(r.get("rule")) for r in refused if not r.get("fresh", r.get("tripped")))
     shadow = collections.Counter(str(n).split("(")[0].strip() for r in records for n in r.get("shadow") or [])
     sessions = {str(r.get("session")) for r in records}
     print(json.dumps({"records": len(records), "sessions": len(sessions), "trips_by_rule": trips,
-                      "shadow_notes": shadow, "taints": sum(1 for r in records if r.get("taint"))}, indent=2))
+                      "refused_after_trip": after, "shadow_notes": shadow,
+                      "taints": sum(1 for r in records if r.get("taint"))}, indent=2))
     return 0
 
 

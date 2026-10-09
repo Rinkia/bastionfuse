@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 (2026-10-09)
 
 - **`log --summary` no longer counts post-trip refusals as trips** (#6). Once the fuse is
   tripped, every refused call was logged as `tripped: true` and tallied under the rule that
@@ -10,6 +10,13 @@
   separately under `refused_after_trip`, which measures how long the agent kept trying after
   containment. Log records written before this change have no `fresh` key and still tally the
   old way.
+- **Docs:** three self-protect scan-scope limits now in README Limits, all found by dogfooding
+  (#5 and the 2026-10-08 round): a shell command is scanned whole, inline script bodies
+  included, so a heredoc that merely *mentions* a protected path is denied; and self-protect
+  does not distinguish reading from writing, so a read-only `grep` of your settings file and
+  read-only `bastionfuse log` / `status` are denied along with the mutating commands. Also the
+  Windows + Claude Desktop install note (install outside `AppData`, or the operator CLI and the
+  hook see different files).
 
 ## 0.1.0 (2026-10-06)
 
